@@ -40,15 +40,6 @@ logging.basicConfig(
 logging.info("Started")
 #.................................................................................
 
-torch.manual_seed(SEED)
-if GPU_ENABLE:
-    torch.cuda.manual_seed(SEED)
-
-cuda_args = {
-                'num_workers': 1, 
-                'pin_memory': True
-            } if GPU_ENABLE else {}
-
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
@@ -59,19 +50,19 @@ class Net(nn.Module):
         self.layers.append(self.conv1)
 
         # nn.MaxPool2d(kernel_size)
-        self.pool1 = nn.MaxPool2d(5)
+        self.pool1 = lambda x: F.max_pool2d(x,2)
         self.layers.append(self.pool1)
 
         self.relu1 = nn.ReLU()
         self.layers.append(self.relu1)
         
-        self.conv2 = nn.Conv2d(10,20,7,stride=1, padding=0) 
+        self.conv2 = nn.Conv2d(10,20,5,stride=1, padding=0) 
         self.layers.append(self.conv2)
         
         self.conv2_drop = nn.Dropout2d()
         self.layers.append(self.conv2_drop)
         
-        self.pool2 = nn.MaxPool2d(5)
+        self.pool2 = lambda x: F.max_pool2d(x,2)
         self.layers.append(self.pool2)
 
         self.relu2 = nn.ReLU()
@@ -95,10 +86,84 @@ class Net(nn.Module):
 
     def forward(self, x):
         tensor = x
-        for a_layer in self.layers:
-            print(a_layer)
+        for a_layer in self.layers: 
+            try: tensor = a_layer(tensor)
+            except Exception as e: logging.error(a_layer); loggging.error(str(e))
+        return F.log_softmax(tensor)
+
+
+def train(epoch):
+    model.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        if GPU_ENABLE: data, target = data.cuda(), target.cuda()
+        data, target = Variable(data), Variable(target)
+        optimizer.zero_grad()
+        output = model(data)
+        # Negative log likelihood
+        loss = F.nll_loss(output, target)
+        loss.backward()
+        optimizer.step()
+        if batch_idx % LOG_STEPS == 0:
+           logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                    epoch, 
+		    batch_idx * len(data), 
+                    len(train_loader.dataset),
+                    100. * batch_idx / len(train_loader), 
+		    loss.data[0]
+		)
+	    )
+
+def test():
+    model.eval()
+    test_loss = 0
+    correct = 0
+    for data, target in test_loader:
+        if GPU_ENABLE: data, target = data.cuda(), target.cuda()
+        data, target = Variable(data, volatile=True), Variable(target)
+        output = model(data)
+        test_loss += F.nll_loss(output, target, size_average=False).data[0]
+        pred = output.data.max(1,keepdim=True)[1]
+        correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+    test_loss /= len(test_loader.dataset)
+    logging.info('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+            test_loss, 
+            correct, 
+            len(test_loader.dataset),
+            100. * correct / len(test_loader.dataset)
+        )
+    )
+
+
+# Run ------------------------------------------------------------------------------------
+
+torch.manual_seed(SEED)
+if GPU_ENABLE: torch.cuda.manual_seed(SEED)
+cuda_args = {
+                'num_workers': 1, 
+                'pin_memory': True
+            } if GPU_ENABLE else {}
+
+# Download data...........................................................
+train_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('datasets/mnist', train=True, download=True,
+                   transform=transforms.Compose([
+                       transforms.ToTensor(),
+                       transforms.Normalize((0.1307,), (0.3081,))
+                   ])),
+    batch_size=BATCH_TRAIN, shuffle=True, **cuda_args)
+test_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('datasets/mnist', train=False, transform=transforms.Compose([
+                       transforms.ToTensor(),
+                       transforms.Normalize((0.1307,), (0.3081,))
+                   ])),
+    batch_size=BATCH_TEST, shuffle=True, **cuda_args)
+#.........................................................................
+
 
 model = Net()
-model.forward(0)
+if GPU_ENABLE: model.cuda()
+optimizer = optim.SGD(model.parameters(), lr=LR, momentum=MOMENTUM)
 
-
+for epoch in range(1, EPOCHS + 1):
+    train(epoch)
+    test()
